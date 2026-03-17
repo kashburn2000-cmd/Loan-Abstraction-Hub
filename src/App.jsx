@@ -239,6 +239,24 @@ function Portfolio({ loans, onSelect, onNew, pinUnlocked, requirePin }) {
   );
 }
 
+
+// Coerce extracted values to correct DB types before saving
+function coerceExtracted(extracted) {
+  const out = { ...extracted };
+  // subordinate_debt_permitted must be boolean or null — Claude sometimes returns a string
+  if ('subordinate_debt_permitted' in out) {
+    const v = out.subordinate_debt_permitted;
+    if (v === null || v === false || v === true) { /* already correct */ }
+    else if (typeof v === 'string') {
+      const lower = v.toLowerCase();
+      if (lower.includes('not permitted') || lower.includes('not allowed') || lower === 'false') out.subordinate_debt_permitted = false;
+      else if (lower.includes('permitted') || lower.includes('allowed') || lower === 'true') out.subordinate_debt_permitted = true;
+      else out.subordinate_debt_permitted = null; // can't determine, leave null
+    }
+  }
+  return out;
+}
+
 // ── ManualExtractPanel ────────────────────────────────────────────────────────
 // Lets the user copy the prompt, go to claude.ai, paste the JSON result back
 function ManualExtractPanel({ loan, docs, onSave, requirePin, pinUnlocked, SB_URL, SB_HDR, PROMPT }) {
@@ -262,7 +280,7 @@ function ManualExtractPanel({ loan, docs, onSave, requirePin, pinUnlocked, SB_UR
     try {
       const m = jsonInput.match(/\{[\s\S]*\}/);
       if (!m) throw new Error('No JSON object found — make sure you copied the full response from Claude.');
-      const extracted = JSON.parse(m[0]);
+      const extracted = coerceExtracted(JSON.parse(m[0]));
       const merged = { ...loan };
       for (const [k, v] of Object.entries(extracted)) {
         if (v !== null && v !== '' && !(Array.isArray(v) && v.length === 0)) merged[k] = v;
@@ -400,7 +418,8 @@ function LoanDetail({ loan, onBack, onSave, onDelete, pinUnlocked, requirePin })
       catch(err) { setExLog('Parse error — raw: '+raw.slice(0,300)); setExtracting(false); return; }
 
       const merged = { ...loan };
-      for (const [k,v] of Object.entries(extracted)) { if(v!==null&&v!==''&&!(Array.isArray(v)&&v.length===0)) merged[k]=v; }
+      const coerced = coerceExtracted(extracted);
+      for (const [k,v] of Object.entries(coerced)) { if(v!==null&&v!==''&&!(Array.isArray(v)&&v.length===0)) merged[k]=v; }
 
       setExLog('Saving…');
       const sr = await fetch(`${SB_URL}/rest/v1/loans?id=eq.${loan.id}`, { method:'PATCH', headers:{ ...SB_HDR, 'Prefer':'return=representation' }, body:JSON.stringify(merged) });
