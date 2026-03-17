@@ -1,15 +1,11 @@
 import { PDFDocument } from 'pdf-lib';
 
-const PAGES_PER_CHUNK = 80;
+const PAGES_PER_CHUNK = 50; // smaller chunks to stay under token rate limit
 const ANTHROPIC_URL   = 'https://api.anthropic.com/v1/messages';
+const CHUNK_DELAY_MS  = 8000; // 8 second pause between chunks to respect rate limit
 
-// ── Call Claude with prompt caching ───────────────────────────────────────────
-// Caching strategy:
-//   - System prompt carries the extraction schema (large, static) → always cached
-//   - Each user message contains only the documents + a short chunk note
-// The cache_control breakpoint on the system prompt tells Anthropic to cache
-// everything up to that point. On chunk 2, 3, etc. the prompt is served from
-// cache (~10x cheaper, ~5x faster).
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 async function callClaude(systemPrompt, contentBlocks) {
   const res = await fetch(ANTHROPIC_URL, {
     method: 'POST',
@@ -20,16 +16,13 @@ async function callClaude(systemPrompt, contentBlocks) {
       'anthropic-beta': 'pdfs-2024-09-25,prompt-caching-2024-07-31',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-haiku-4-5-20251001', // higher rate limits, much cheaper, great at extraction
       max_tokens: 4096,
       system: [
         {
           type: 'text',
           text: systemPrompt,
-          // Mark the end of the system prompt as a cache breakpoint.
-          // Anthropic will cache everything up to here and reuse it
-          // across all chunk calls within this request lifecycle.
-          cache_control: { type: 'ephemeral' },
+          cache_control: { type: 'ephemeral' }, // cache the large prompt across chunks
         },
       ],
       messages: [{ role: 'user', content: contentBlocks }],
@@ -43,7 +36,6 @@ async function callClaude(systemPrompt, contentBlocks) {
   return res.json();
 }
 
-// ── Split a PDF into chunks of PAGES_PER_CHUNK pages ─────────────────────────
 async function splitPdf(base64Data) {
   const pdfBytes = Buffer.from(base64Data, 'base64');
   const srcDoc   = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
@@ -69,7 +61,6 @@ async function splitPdf(base64Data) {
   return chunks;
 }
 
-// ── Merge two extraction results, preferring more complete values ──────────────
 function mergeExtractions(base, incoming) {
   if (!base) return incoming;
   if (!incoming) return base;
@@ -95,7 +86,6 @@ function parseJson(text) {
   return JSON.parse(m[0]);
 }
 
-// ── Main handler ──────────────────────────────────────────────────────────────
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -107,7 +97,7 @@ export default async function handler(req, res) {
     const { documents, prompt } = req.body;
     if (!documents?.length) return res.status(400).json({ error: 'No documents provided' });
 
-    // Build content blocks, splitting large PDFs into chunks
+    // Build content blocks, splitting large PDFs
     const allBlocks = [];
     for (const doc of documents) {
       if (doc.media_type === 'application/pdf') {
@@ -120,7 +110,6 @@ export default async function handler(req, res) {
           });
         }
       } else {
-        // DOCX — no splitting needed, estimate 5 pages
         allBlocks.push({
           block: { type: 'document', source: { type: 'base64', media_type: doc.media_type, data: doc.base64 } },
           pageCount: 5,
@@ -129,7 +118,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // Group blocks into batches, each under PAGES_PER_CHUNK
+    // Group into batches under page limit
     const batches = [];
     let batch = [], pages = 0;
     for (const item of allBlocks) {
@@ -141,19 +130,21 @@ export default async function handler(req, res) {
     }
     if (batch.length > 0) batches.push(batch);
 
-    // Call Claude once per batch, merging results
-    // The system prompt (extraction schema) is cached after the first call
+    // Call Claude once per batch with delay between calls
     let merged = null;
-    let totalCacheCreatedTokens = 0;
-    let totalCacheReadTokens = 0;
+    let totalCacheCreated = 0;
+    let totalCacheRead = 0;
 
     for (let i = 0; i < batches.length; i++) {
-      const b = batches[i];
+      // Pause between chunks to stay under rate limit (skip before first call)
+      if (i > 0) {
+        console.log(`Waiting ${CHUNK_DELAY_MS}ms before chunk ${i + 1} to respect rate limit…`);
+        await sleep(CHUNK_DELAY_MS);
+      }
 
-      // Content blocks = documents only (no prompt — that lives in system now)
+      const b = batches[i];
       const contentBlocks = b.map(x => x.block);
 
-      // Add a short chunk note when splitting across multiple calls
       if (batches.length > 1) {
         contentBlocks.push({
           type: 'text',
@@ -167,19 +158,18 @@ export default async function handler(req, res) {
       const raw  = data.content?.find(c => c.type === 'text')?.text || '';
       merged     = mergeExtractions(merged, parseJson(raw));
 
-      // Track cache usage for logging
       if (data.usage) {
-        totalCacheCreatedTokens += data.usage.cache_creation_input_tokens || 0;
-        totalCacheReadTokens    += data.usage.cache_read_input_tokens || 0;
+        totalCacheCreated += data.usage.cache_creation_input_tokens || 0;
+        totalCacheRead    += data.usage.cache_read_input_tokens || 0;
       }
-    }
 
-    console.log(`Extraction complete. Chunks: ${batches.length}. Cache created: ${totalCacheCreatedTokens} tokens. Cache read: ${totalCacheReadTokens} tokens.`);
+      console.log(`Chunk ${i + 1}/${batches.length} done. Cache created: ${totalCacheCreated}, read: ${totalCacheRead}`);
+    }
 
     return res.status(200).json({
       content: [{ type: 'text', text: JSON.stringify(merged) }],
       chunksProcessed: batches.length,
-      cacheStats: { created: totalCacheCreatedTokens, read: totalCacheReadTokens },
+      cacheStats: { created: totalCacheCreated, read: totalCacheRead },
     });
 
   } catch (err) {
