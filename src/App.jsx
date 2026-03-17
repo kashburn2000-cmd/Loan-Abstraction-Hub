@@ -240,7 +240,91 @@ function Portfolio({ loans, onSelect, onNew, pinUnlocked, requirePin }) {
 }
 
 // ── LoanDetail ────────────────────────────────────────────────────────────────
-function LoanDetail({ loan, onBack, onSave, onDelete, pinUnlocked, requirePin }) {
+// ── ManualExtractPanel ────────────────────────────────────────────────────────
+// Lets the user copy the prompt, go to claude.ai, paste the JSON result back
+function ManualExtractPanel({ loan, docs, onSave, requirePin, pinUnlocked, SB_URL, SB_HDR, PROMPT }) {
+  const [copied, setCopied]     = React.useState(false);
+  const [jsonInput, setJsonInput] = React.useState('');
+  const [saving, setSaving]     = React.useState(false);
+  const [msg, setMsg]           = React.useState('');
+  const [showPaste, setShowPaste] = React.useState(false);
+
+  function copyPrompt() {
+    const instructions = `You are a commercial real estate paralegal. I am going to attach ${docs.length} loan document${docs.length > 1 ? 's' : ''} for the property "${loan.property_name || 'this loan'}". Please extract all information into the exact JSON schema below. Return ONLY valid JSON — no text outside it.\n\n${PROMPT}`;
+    navigator.clipboard.writeText(instructions).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 3000);
+    });
+  }
+
+  async function importJson() {
+    if (!jsonInput.trim()) return;
+    setSaving(true); setMsg('');
+    try {
+      const m = jsonInput.match(/\{[\s\S]*\}/);
+      if (!m) throw new Error('No JSON object found — make sure you copied the full response from Claude.');
+      const extracted = JSON.parse(m[0]);
+      const merged = { ...loan };
+      for (const [k, v] of Object.entries(extracted)) {
+        if (v !== null && v !== '' && !(Array.isArray(v) && v.length === 0)) merged[k] = v;
+      }
+      const res = await fetch(`${SB_URL}/rest/v1/loans?id=eq.${loan.id}`, {
+        method: 'PATCH', headers: { ...SB_HDR, 'Prefer': 'return=representation' },
+        body: JSON.stringify(merged),
+      });
+      if (!res.ok) throw new Error('Save failed: ' + await res.text());
+      const saved = await res.json();
+      onSave(Array.isArray(saved) ? saved[0] : saved);
+      setMsg('✓ Abstract imported successfully');
+      setJsonInput('');
+      setShowPaste(false);
+    } catch(err) {
+      setMsg('Error: ' + err.message);
+    }
+    setSaving(false);
+  }
+
+  return (
+    <div style={{ background:'#13151a', border:'1px solid #1e2330', borderRadius:4, padding:'1rem' }}>
+      <div style={{ fontSize:'0.72rem', color:'#e8eaed', fontWeight:600, marginBottom:4 }}>📋 Extract via Claude.ai</div>
+      <div style={{ fontSize:'0.68rem', color:'#4a4f5a', marginBottom:'0.75rem', lineHeight:1.4 }}>No API credits needed. Copy the prompt, paste it into claude.ai with your documents attached, then paste the JSON back here.</div>
+
+      <div style={{ display:'flex', flexDirection:'column', gap:'0.5rem' }}>
+        <button onClick={copyPrompt} style={{ padding:'6px', background:'#1e2330', border:`1px solid ${copied?TT_OR:'#2e3340'}`, borderRadius:3, color:copied?TT_OR:'#9aa0aa', cursor:'pointer', fontSize:'0.75rem', fontFamily:'inherit', fontWeight:600 }}>
+          {copied ? '✓ Prompt Copied!' : '1. Copy Extraction Prompt'}
+        </button>
+
+        <a href="https://claude.ai" target="_blank" rel="noreferrer"
+          style={{ padding:'6px', background:'#1e2330', border:'1px solid #2e3340', borderRadius:3, color:'#9aa0aa', cursor:'pointer', fontSize:'0.75rem', fontFamily:'inherit', fontWeight:600, textAlign:'center', display:'block', textDecoration:'none' }}>
+          2. Open claude.ai ↗
+        </a>
+
+        <button onClick={() => setShowPaste(p => !p)} style={{ padding:'6px', background:'#1e2330', border:'1px solid #2e3340', borderRadius:3, color:'#9aa0aa', cursor:'pointer', fontSize:'0.75rem', fontFamily:'inherit', fontWeight:600 }}>
+          3. {showPaste ? 'Hide JSON paste area' : 'Paste JSON result'}
+        </button>
+      </div>
+
+      {showPaste && (
+        <div style={{ marginTop:'0.75rem' }}>
+          <textarea
+            value={jsonInput}
+            onChange={e => setJsonInput(e.target.value)}
+            placeholder='Paste the full JSON response from Claude here…'
+            rows={6}
+            style={{ width:'100%', background:'#0f1117', border:'1px solid #2e3340', borderRadius:3, color:'#c8cdd6', padding:'8px', fontFamily:'monospace', fontSize:'0.7rem', resize:'vertical', boxSizing:'border-box' }}
+          />
+          <button onClick={() => requirePin(importJson)} disabled={saving || !jsonInput.trim()}
+            style={{ marginTop:'0.5rem', width:'100%', padding:'6px', background:jsonInput.trim()?TT_OR:'#2a2d35', border:'none', borderRadius:3, color:jsonInput.trim()?'#fff':'#4a4f5a', cursor:jsonInput.trim()?'pointer':'default', fontSize:'0.75rem', fontFamily:'inherit', fontWeight:600 }}>
+            {saving ? 'Importing…' : pinUnlocked ? 'Import & Save' : '🔒 Import & Save'}
+          </button>
+        </div>
+      )}
+      {msg && <div style={{ marginTop:'0.5rem', fontSize:'0.68rem', color:msg.startsWith('✓')?'#6a9e7f':'#c47474' }}>{msg}</div>}
+    </div>
+  );
+}
+
+// ── LoanDetail ────────────────────────────────────────────────────────────────
   const [editing, setEditing]       = React.useState(false);
   const [form, setForm]             = React.useState(loan);
   const [saving, setSaving]         = React.useState(false);
@@ -528,21 +612,40 @@ function LoanDetail({ loan, onBack, onSave, onDelete, pinUnlocked, requirePin })
       {/* Documents */}
       {sec==='documents'&&!editing&&(
         <div>
-          <div style={{ background:'#0f1117', border:'2px dashed #2e3340', borderRadius:4, padding:'1.5rem', textAlign:'center', marginBottom:'1.25rem' }}>
-            <div style={{ fontSize:'0.75rem', color:'#4a4f5a', marginBottom:'0.75rem' }}>Upload loan documents (PDF or DOCX) — up to 5 per loan. Upload all documents before running extraction.</div>
-            <div style={{ display:'flex', justifyContent:'center', gap:'0.75rem', flexWrap:'wrap' }}>
+          <div style={{ background:'#0f1117', border:'2px dashed #2e3340', borderRadius:4, padding:'1.5rem', marginBottom:'1.25rem' }}>
+            {/* Upload row */}
+            <div style={{ textAlign:'center', marginBottom:'1rem' }}>
+              <div style={{ fontSize:'0.75rem', color:'#4a4f5a', marginBottom:'0.75rem' }}>Upload loan documents (PDF or DOCX) — up to 5 per loan.</div>
               <label style={{ padding:'6px 18px', background:'#1e2330', border:'1px solid #2e3340', borderRadius:3, color:'#9aa0aa', cursor:'pointer', fontSize:'0.78rem', fontFamily:'inherit' }}>
                 {uploading?'Uploading…':'↑ Upload Documents'}
                 <input type="file" accept=".pdf,.docx,.doc" multiple onChange={upload} disabled={uploading||docs.length>=5} style={{ display:'none' }}/>
               </label>
-              {docs.length>0&&(
-                <button onClick={extract} disabled={extracting} style={{ padding:'6px 18px', background:extracting?'#2a2d35':TT_OR, border:'none', borderRadius:3, color:extracting?'#4a4f5a':'#fff', cursor:extracting?'default':'pointer', fontSize:'0.78rem', fontFamily:'inherit', fontWeight:600 }}>
-                  {extracting?'Extracting…':'⚡ Extract Abstract'}
-                </button>
-              )}
+              {upMsg&&<div style={{ marginTop:'0.6rem', fontSize:'0.72rem', color:upMsg.startsWith('✓')?'#6a9e7f':'#c47474' }}>{upMsg}</div>}
             </div>
-            {upMsg&&<div style={{ marginTop:'0.75rem', fontSize:'0.72rem', color:upMsg.startsWith('✓')?'#6a9e7f':'#c47474' }}>{upMsg}</div>}
-            {exLog&&<div style={{ marginTop:'0.5rem', fontSize:'0.72rem', color:exLog.startsWith('✓')?'#6a9e7f':'#c87941', fontFamily:'monospace' }}>{exLog}</div>}
+
+            {/* Extraction options */}
+            {docs.length>0&&(
+              <div>
+                <div style={{ borderTop:'1px solid #1e2330', paddingTop:'1rem' }}>
+                  <div style={{ fontSize:'0.65rem', color:'#4a4f5a', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:'0.75rem', textAlign:'center' }}>Extract Abstract</div>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'1rem' }}>
+
+                    {/* Option A — API */}
+                    <div style={{ background:'#13151a', border:'1px solid #1e2330', borderRadius:4, padding:'1rem' }}>
+                      <div style={{ fontSize:'0.72rem', color:'#e8eaed', fontWeight:600, marginBottom:4 }}>⚡ Auto Extract</div>
+                      <div style={{ fontSize:'0.68rem', color:'#4a4f5a', marginBottom:'0.75rem', lineHeight:1.4 }}>Send documents to Claude API. Requires API credits. Large documents may hit rate limits on new accounts.</div>
+                      <button onClick={extract} disabled={extracting} style={{ width:'100%', padding:'6px', background:extracting?'#2a2d35':TT_OR, border:'none', borderRadius:3, color:extracting?'#4a4f5a':'#fff', cursor:extracting?'default':'pointer', fontSize:'0.75rem', fontFamily:'inherit', fontWeight:600 }}>
+                        {extracting?'Extracting…':'Extract via API'}
+                      </button>
+                      {exLog&&<div style={{ marginTop:'0.5rem', fontSize:'0.68rem', color:exLog.startsWith('✓')?'#6a9e7f':'#c87941', fontFamily:'monospace', wordBreak:'break-word' }}>{exLog}</div>}
+                    </div>
+
+                    {/* Option B — Manual via claude.ai */}
+                    <ManualExtractPanel loan={loan} docs={docs} onSave={onSave} requirePin={requirePin} pinUnlocked={pinUnlocked} SB_URL={SB_URL} SB_HDR={SB_HDR} PROMPT={PROMPT} />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
           {docs.length>0&&(
             <table style={{ width:'100%', borderCollapse:'collapse' }}>
