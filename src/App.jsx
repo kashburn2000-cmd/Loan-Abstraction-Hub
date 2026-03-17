@@ -287,7 +287,8 @@ function LoanDetail({ loan, onBack, onSave, onDelete, pinUnlocked, requirePin })
     if (!docs.length) { setExLog('No documents uploaded.'); return; }
     setExtracting(true); setExLog('Reading documents…');
     try {
-      const content = [];
+      // Read all documents into base64 — server handles splitting
+      const documents = [];
       for (const doc of docs.slice(0,5)) {
         setExLog(`Reading ${doc.file_name}…`);
         const dl = await fetch(`${SB_URL}/storage/v1/object/loan-documents/${doc.storage_path}`, { headers:{ 'apikey':SB_KEY, 'Authorization':`Bearer ${SB_KEY}` } });
@@ -295,16 +296,15 @@ function LoanDetail({ loan, onBack, onSave, onDelete, pinUnlocked, requirePin })
         const blob = await dl.blob();
         const b64 = await new Promise(res => { const r=new FileReader(); r.onload=()=>res(r.result.split(',')[1]); r.readAsDataURL(blob); });
         const media = doc.file_name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-        content.push({ type:'document', source:{ type:'base64', media_type:media, data:b64 } });
+        documents.push({ base64: b64, media_type: media, name: doc.file_name });
       }
-      if (!content.length) { setExLog('Could not read documents.'); setExtracting(false); return; }
-      content.push({ type:'text', text:PROMPT });
-      setExLog(`Sending ${content.length-1} doc${content.length>2?'s':''} to Claude…`);
+      if (!documents.length) { setExLog('Could not read documents.'); setExtracting(false); return; }
+      setExLog(`Sending ${documents.length} doc${documents.length>1?'s':''} to Claude (large PDFs will be split automatically)…`);
 
       const api = await fetch('/api/extract', {
         method:'POST',
         headers:{ 'Content-Type':'application/json' },
-        body:JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:4096, messages:[{ role:'user', content }] }),
+        body:JSON.stringify({ documents, prompt: PROMPT }),
       });
       if (!api.ok) { const e=await api.json(); setExLog('API error: '+(e.error?.message||JSON.stringify(e))); setExtracting(false); return; }
 
