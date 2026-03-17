@@ -243,7 +243,8 @@ function Portfolio({ loans, onSelect, onNew, pinUnlocked, requirePin }) {
 // Coerce extracted values to correct DB types before saving
 function coerceExtracted(extracted) {
   const out = { ...extracted };
-  // subordinate_debt_permitted must be boolean or null — Claude sometimes returns a string
+
+  // Boolean fields — Claude sometimes returns descriptive strings
   if ('subordinate_debt_permitted' in out) {
     const v = out.subordinate_debt_permitted;
     if (v === null || v === false || v === true) { /* already correct */ }
@@ -251,9 +252,39 @@ function coerceExtracted(extracted) {
       const lower = v.toLowerCase();
       if (lower.includes('not permitted') || lower.includes('not allowed') || lower === 'false') out.subordinate_debt_permitted = false;
       else if (lower.includes('permitted') || lower.includes('allowed') || lower === 'true') out.subordinate_debt_permitted = true;
-      else out.subordinate_debt_permitted = null; // can't determine, leave null
+      else out.subordinate_debt_permitted = null;
     }
   }
+
+  // Numeric fields — Claude sometimes returns strings like "$15,000,000" or descriptions
+  const numericFields = [
+    'loan_amount', 'origination_fee_pct', 'origination_fee_amount',
+    'interest_rate_fixed', 'interest_rate_spread', 'interest_rate_floor',
+    'completion_guaranty_pct', 'repayment_guaranty_pct',
+    'dscr_covenant', 'ltv_covenant', 'liquidity_covenant', 'net_worth_covenant',
+    'equity_deposit', 'lender_reserves_per_unit',
+    'change_order_individual', 'change_order_aggregate',
+    'distribution_restriction_dscr', 'initial_term_months',
+  ];
+  for (const field of numericFields) {
+    if (!(field in out)) continue;
+    const v = out[field];
+    if (v === null || typeof v === 'number') continue;
+    if (typeof v === 'string') {
+      // Strip $, commas, spaces, then try to parse the first number found
+      const cleaned = v.replace(/[$,\s]/g, '');
+      const match = cleaned.match(/[\d.]+/);
+      if (match) {
+        const num = parseFloat(match[0]);
+        out[field] = isNaN(num) ? null : num;
+      } else {
+        // Can't extract a number — move the text to extraction_notes and null the field
+        out[field] = null;
+        out.extraction_notes = [out.extraction_notes, `${field}: ${v}`].filter(Boolean).join(' | ');
+      }
+    }
+  }
+
   return out;
 }
 
