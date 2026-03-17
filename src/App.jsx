@@ -301,10 +301,10 @@ function LoanDetail({ loan, onBack, onSave, onDelete, pinUnlocked, requirePin })
       content.push({ type:'text', text:PROMPT });
       setExLog(`Sending ${content.length-1} doc${content.length>2?'s':''} to Claude…`);
 
-      const api = await fetch('https://api.anthropic.com/v1/messages', {
+      const api = await fetch('/api/extract', {
         method:'POST',
-        headers:{ 'Content-Type':'application/json', 'anthropic-version':'2023-06-01', 'anthropic-beta':'pdfs-2024-09-25' },
-        body:JSON.stringify({ model:'claude-opus-4-5', max_tokens:4096, messages:[{ role:'user', content }] }),
+        headers:{ 'Content-Type':'application/json' },
+        body:JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:4096, messages:[{ role:'user', content }] }),
       });
       if (!api.ok) { const e=await api.json(); setExLog('API error: '+(e.error?.message||JSON.stringify(e))); setExtracting(false); return; }
 
