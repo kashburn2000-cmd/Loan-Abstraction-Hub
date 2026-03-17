@@ -239,7 +239,6 @@ function Portfolio({ loans, onSelect, onNew, pinUnlocked, requirePin }) {
   );
 }
 
-// ── LoanDetail ────────────────────────────────────────────────────────────────
 // ── ManualExtractPanel ────────────────────────────────────────────────────────
 // Lets the user copy the prompt, go to claude.ai, paste the JSON result back
 function ManualExtractPanel({ loan, docs, onSave, requirePin, pinUnlocked, SB_URL, SB_HDR, PROMPT }) {
@@ -325,6 +324,7 @@ function ManualExtractPanel({ loan, docs, onSave, requirePin, pinUnlocked, SB_UR
 }
 
 // ── LoanDetail ────────────────────────────────────────────────────────────────
+function LoanDetail({ loan, onBack, onSave, onDelete, pinUnlocked, requirePin }) {
   const [editing, setEditing]       = React.useState(false);
   const [form, setForm]             = React.useState(loan);
   const [saving, setSaving]         = React.useState(false);
